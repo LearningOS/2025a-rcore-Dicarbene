@@ -45,6 +45,8 @@ pub struct TaskManagerInner {
     tasks: [TaskControlBlock; MAX_APP_NUM],
     /// id of current `Running` task
     current_task: usize,
+    /// syscall call counts for each syscall id
+    syscall_counts: [usize; 512],
 }
 
 lazy_static! {
@@ -60,18 +62,37 @@ lazy_static! {
             task.task_status = TaskStatus::Ready;
         }
         TaskManager {
-            num_app,
-            inner: unsafe {
-                UPSafeCell::new(TaskManagerInner {
-                    tasks,
-                    current_task: 0,
-                })
-            },
-        }
+                num_app,
+                inner: unsafe {
+                    UPSafeCell::new(TaskManagerInner {
+                        tasks,
+                        current_task: 0,
+                        syscall_counts: [0; 512],
+                    })
+                },
+            }
     };
 }
 
 impl TaskManager {
+    /// Increment the syscall count for the given syscall id
+    pub fn increment_syscall_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        if syscall_id < inner.syscall_counts.len() {
+            inner.syscall_counts[syscall_id] += 1;
+        }
+    }
+
+    /// Get the syscall count for the given syscall id
+    pub fn get_syscall_count(&self, syscall_id: usize) -> isize {
+        let inner = self.inner.exclusive_access();
+        if syscall_id < inner.syscall_counts.len() {
+            inner.syscall_counts[syscall_id] as isize
+        } else {
+            0
+        }
+    }
+
     /// Run the first task in task list.
     ///
     /// Generally, the first task in task list is an idle task (we call it zero process later).
@@ -168,4 +189,14 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// Increment the syscall count for the given syscall id
+pub fn increment_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.increment_syscall_count(syscall_id);
+}
+
+/// Get the syscall count for the given syscall id
+pub fn get_syscall_count(syscall_id: usize) -> isize {
+    TASK_MANAGER.get_syscall_count(syscall_id)
 }
