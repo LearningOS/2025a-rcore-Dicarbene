@@ -233,6 +233,21 @@ impl MemorySet {
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
         self.page_table.translate(vpn)
     }
+
+    /// 检查虚拟页面是否已经被映射
+    pub fn is_mapped(&self, vpn: VirtPageNum) -> bool {
+        self.page_table.translate(vpn).is_some()
+    }
+
+    /// 映射虚拟页面到物理页面
+    pub fn map_page(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
+        self.page_table.map(vpn, ppn, flags);
+    }
+
+    /// 解除虚拟页面的映射
+    pub fn unmap_page(&mut self, vpn: VirtPageNum) {
+        self.page_table.unmap(vpn);
+    }
     /// shrink the area to new_end
     #[allow(unused)]
     pub fn shrink_to(&mut self, start: VirtAddr, new_end: VirtAddr) -> bool {

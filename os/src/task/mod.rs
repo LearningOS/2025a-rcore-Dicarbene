@@ -40,12 +40,14 @@ pub struct TaskManager {
     inner: UPSafeCell<TaskManagerInner>,
 }
 
-/// The task manager inner in 'UPSafeCell'
+/// 任务管理器内部结构体（在 UPSafeCell 中）
 struct TaskManagerInner {
-    /// task list
+    /// 任务列表
     tasks: Vec<TaskControlBlock>,
-    /// id of current `Running` task
+    /// 当前运行任务的 ID
     current_task: usize,
+    /// 系统调用调用次数数组，索引为系统调用 ID
+    syscall_counts: [usize; 512],
 }
 
 lazy_static! {
@@ -64,6 +66,7 @@ lazy_static! {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    syscall_counts: [0; 512],
                 })
             },
         }
@@ -71,6 +74,37 @@ lazy_static! {
 }
 
 impl TaskManager {
+    /// 增加指定系统调用的调用次数
+    /// 
+    /// # 参数
+    /// - `syscall_id`: 系统调用 ID
+    /// 
+    /// # 实现细节
+    /// 如果系统调用 ID 在有效范围内（0-511），则增加对应的计数器。
+    pub fn increment_syscall_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        if syscall_id < inner.syscall_counts.len() {
+            inner.syscall_counts[syscall_id] += 1;
+        }
+    }
+
+    /// 获取指定系统调用的调用次数
+    /// 
+    /// # 参数
+    /// - `syscall_id`: 系统调用 ID
+    /// 
+    /// # 返回值
+    /// - 如果系统调用 ID 在有效范围内，返回调用次数
+    /// - 否则返回 0
+    pub fn get_syscall_count(&self, syscall_id: usize) -> isize {
+        let inner = self.inner.exclusive_access();
+        if syscall_id < inner.syscall_counts.len() {
+            inner.syscall_counts[syscall_id] as isize
+        } else {
+            0
+        }
+    }
+
     /// Run the first task in task list.
     ///
     /// Generally, the first task in task list is an idle task (we call it zero process later).
@@ -133,6 +167,27 @@ impl TaskManager {
         inner.tasks[cur].change_program_brk(size)
     }
 
+    /// 检查当前任务的虚拟页面是否已经被映射
+    pub fn is_current_page_mapped(&self, vpn: crate::mm::VirtPageNum) -> bool {
+        let inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].memory_set.is_mapped(vpn)
+    }
+
+    /// 映射当前任务的虚拟页面到物理页面
+    pub fn map_current_page(&self, vpn: crate::mm::VirtPageNum, ppn: crate::mm::PhysPageNum, flags: crate::mm::PTEFlags) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].memory_set.map_page(vpn, ppn, flags);
+    }
+
+    /// 解除当前任务的虚拟页面映射
+    pub fn unmap_current_page(&self, vpn: crate::mm::VirtPageNum) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].memory_set.unmap_page(vpn);
+    }
+
     /// Switch current `Running` task to the task we have found,
     /// or there is no `Ready` task and we can exit with all applications completed
     fn run_next_task(&self) {
@@ -182,23 +237,69 @@ pub fn suspend_current_and_run_next() {
     run_next_task();
 }
 
-/// Exit the current 'Running' task and run the next task in task list.
+/// 退出当前运行的任务并运行下一个任务
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
 }
 
-/// Get the current 'Running' task's token.
+/// 获取当前运行任务的页表 token
+/// 
+/// # 返回值
+/// - 当前任务的页表 token，用于虚拟地址翻译
 pub fn current_user_token() -> usize {
     TASK_MANAGER.get_current_token()
 }
 
-/// Get the current 'Running' task's trap contexts.
+/// 获取当前运行任务的 trap 上下文
+/// 
+/// # 返回值
+/// - 当前任务的 trap 上下文的可变引用
 pub fn current_trap_cx() -> &'static mut TrapContext {
     TASK_MANAGER.get_current_trap_cx()
+}
+
+/// 增加指定系统调用的调用次数
+/// 
+/// # 参数
+/// - `syscall_id`: 系统调用 ID
+/// 
+/// # 实现细节
+/// 调用任务管理器的方法来增加系统调用计数器
+pub fn increment_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.increment_syscall_count(syscall_id);
+}
+
+/// 获取指定系统调用的调用次数
+/// 
+/// # 参数
+/// - `syscall_id`: 系统调用 ID
+/// 
+/// # 返回值
+/// - 系统调用次数
+/// 
+/// # 实现细节
+/// 调用任务管理器的方法来获取系统调用计数
+pub fn get_syscall_count(syscall_id: usize) -> isize {
+    TASK_MANAGER.get_syscall_count(syscall_id)
 }
 
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// 检查当前任务的虚拟页面是否已经被映射
+pub fn is_current_page_mapped(vpn: crate::mm::VirtPageNum) -> bool {
+    TASK_MANAGER.is_current_page_mapped(vpn)
+}
+
+/// 映射当前任务的虚拟页面到物理页面
+pub fn map_current_page(vpn: crate::mm::VirtPageNum, ppn: crate::mm::PhysPageNum, flags: crate::mm::PTEFlags) {
+    TASK_MANAGER.map_current_page(vpn, ppn, flags);
+}
+
+/// 解除当前任务的虚拟页面映射
+pub fn unmap_current_page(vpn: crate::mm::VirtPageNum) {
+    TASK_MANAGER.unmap_current_page(vpn);
 }
